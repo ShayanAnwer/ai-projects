@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arena Bunny FPS</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      background: #0a0a12;
+    }
+    #game { display: block; width: 100%; height: 100%; }
+    #crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 24px;
+      height: 24px;
+      margin: -12px 0 0 -12px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #crosshair::before,
+    #crosshair::after {
+      content: "";
+      position: absolute;
+      background: rgba(120, 255, 180, 0.85);
+      box-shadow: 0 0 6px rgba(120, 255, 180, 0.6);
+    }
+    #crosshair::before {
+      left: 50%;
+      top: 2px;
+      bottom: 2px;
+      width: 2px;
+      margin-left: -1px;
+    }
+    #crosshair::after {
+      top: 50%;
+      left: 2px;
+      right: 2px;
+      height: 2px;
+      margin-top: -1px;
+    }
+    #crosshair .dot {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 4px;
+      height: 4px;
+      margin: -2px 0 0 -2px;
+      border-radius: 50%;
+      background: rgba(255, 80, 80, 0.95);
+      box-shadow: 0 0 4px #f44;
+    }
+    #hud {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      color: #e8f0ff;
+      font-size: 14px;
+      text-shadow: 0 1px 3px #000;
+      z-index: 10;
+      opacity: 0.9;
+    }
+    #help {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      color: #a8b0c8;
+      font-size: 12px;
+      text-align: right;
+      text-shadow: 0 1px 3px #000;
+      z-index: 10;
+      max-width: 220px;
+      line-height: 1.4;
+    }
+    .hit-plus {
+      position: fixed;
+      font-weight: 800;
+      font-size: 28px;
+      color: #7dff9a;
+      text-shadow: 0 0 10px #2f8, 0 2px 0 #000;
+      pointer-events: none;
+      z-index: 20;
+      animation: hitFloat 1s ease-out forwards;
+    }
+    @keyframes hitFloat {
+      0% { opacity: 1; transform: translate(-50%, -50%) scale(0.6); }
+      20% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+      100% { opacity: 0; transform: translate(-50%, -180%) scale(1); }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="crosshair"><span class="dot"></span></div>
+  <div id="hud">Score: <span id="score">0</span></div>
+  <div id="help">
+    Arrows: move &amp; turn<br />
+    Space: shoot
+  </div>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+
+    const canvas = document.getElementById("game");
+    const scoreEl = document.getElementById("score");
+
+    const ARENA = 42;
+    const WALL_H = 8;
+    const PLAYER_H = 1.6;
+    const MOVE_SPEED = 14;
+    const ROT_SPEED = 2.2;
+    const BUNNY_SPEED = 2.35;
+    const SHOOT_COOLDOWN = 0.28;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1f2e);
+    scene.fog = new THREE.Fog(0x1a1f2e, 25, 65);
+
+    const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(0, PLAYER_H, ARENA * 0.35);
+
+    const hemi = new THREE.HemisphereLight(0x9ec8ff, 0x3a3548, 0.55);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff4e0, 0.95);
+    sun.position.set(18, 36, 12);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = 120;
+    sun.shadow.camera.left = sun.shadow.camera.bottom = -50;
+    sun.shadow.camera.right = sun.shadow.camera.top = 50;
+    scene.add(sun);
+
+    const floorGeo = new THREE.PlaneGeometry(ARENA * 2, ARENA * 2);
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x2d3a52,
+      roughness: 0.85,
+      metalness: 0.08,
+    });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(ARENA * 2, 28, 0x4a5a78, 0x2a3548);
+    grid.position.y = 0.02;
+    scene.add(grid);
+
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x3d4a63,
+      roughness: 0.7,
+      metalness: 0.1,
+    });
+    const wallT = ARENA * 2;
+    const wallH = WALL_H;
+    function wall(px, pz, rx, rz) {
+      const g = new THREE.BoxGeometry(rx, wallH, rz);
+      const m = new THREE.Mesh(g, wallMat);
+      m.position.set(px, wallH / 2, pz);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+    }
+    wall(0, -ARENA, wallT, 1.2);
+    wall(0, ARENA, wallT, 1.2);
+    wall(-ARENA, 0, 1.2, wallT);
+    wall(ARENA, 0, 1.2, wallT);
+
+    const pillars = [];
+    const pillarGeo = new THREE.CylinderGeometry(0.9, 1.1, 5, 10);
+    const pillarMat = new THREE.MeshStandardMaterial({ color: 0x55607a, roughness: 0.65 });
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 + 0.3;
+      const r = ARENA * 0.55;
+      const p = new THREE.Mesh(pillarGeo, pillarMat);
+      p.position.set(Math.cos(ang) * r, 2.5, Math.sin(ang) * r);
+      p.castShadow = true;
+      p.receiveShadow = true;
+      scene.add(p);
+      pillars.push(p);
+    }
+
+    function makeBunny() {
+      const group = new THREE.Group();
+      const fur = new THREE.MeshStandardMaterial({ color: 0xf5f0ea, roughness: 0.9 });
+      const dark = new THREE.MeshStandardMaterial({ color: 0x8b7355, roughness: 0.85 });
+      const pink = new THREE.MeshStandardMaterial({ color: 0xffb7c8, roughness: 0.75 });
+
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 12), fur);
+      body.scale.set(1, 0.85, 1.1);
+      body.position.y = 0.45;
+      body.castShadow = true;
+      group.add(body);
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 14, 12), fur);
+      head.position.set(0, 0.78, 0.35);
+      head.castShadow = true;
+      group.add(head);
+
+      const snout = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), pink);
+      snout.position.set(0, 0.72, 0.62);
+      group.add(snout);
+
+      const earGeo = new THREE.ConeGeometry(0.12, 0.42, 8);
+      const earL = new THREE.Mesh(earGeo, fur);
+      earL.position.set(-0.16, 1.05, 0.22);
+      earL.rotation.z = 0.25;
+      earL.rotation.x = -0.15;
+      earL.castShadow = true;
+      group.add(earL);
+      const earR = earL.clone();
+      earR.position.x = 0.16;
+      earR.rotation.z = -0.25;
+      group.add(earR);
+
+      const eyeGeo = new THREE.SphereGeometry(0.05, 8, 8);
+      const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.3 });
+      const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+      eyeL.position.set(-0.1, 0.82, 0.55);
+      group.add(eyeL);
+      const eyeR = eyeL.clone();
+      eyeR.position.x = 0.1;
+      group.add(eyeR);
+
+      const tail = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), fur);
+      tail.position.set(0, 0.45, -0.52);
+      group.add(tail);
+
+      const legGeo = new THREE.CapsuleGeometry(0.08, 0.12, 4, 8);
+      for (const [lx, lz] of [[-0.22, 0.1], [0.22, 0.1], [-0.18, -0.2], [0.18, -0.2]]) {
+        const leg = new THREE.Mesh(legGeo, dark);
+        leg.position.set(lx, 0.12, lz);
+        leg.castShadow = true;
+        group.add(leg);
+      }
+
+      group.userData.isBunny = true;
+      return group;
+    }
+
+    let target = new THREE.Vector3(6, 0, 4);
+    function pickNewTarget() {
+      const margin = 4;
+      target.set(
+        THREE.MathUtils.randFloat(-ARENA + margin, ARENA - margin),
+        0,
+        THREE.MathUtils.randFloat(-ARENA + margin, ARENA - margin)
+      );
+    }
+
+    const bunnyVel = new THREE.Vector3();
+
+    function destroyBunny(b) {
+      scene.remove(b);
+      const seenGeo = new Set();
+      const seenMat = new Set();
+      b.traverse((obj) => {
+        if (!obj.isMesh) return;
+        if (obj.geometry && !seenGeo.has(obj.geometry)) {
+          seenGeo.add(obj.geometry);
+          obj.geometry.dispose();
+        }
+        if (obj.material) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (m && !seenMat.has(m)) {
+              seenMat.add(m);
+              m.dispose();
+            }
+          }
+        }
+      });
+    }
+
+    function spawnBunny() {
+      const b = makeBunny();
+      b.scale.setScalar(1.48);
+      const margin = 5;
+      b.position.set(
+        THREE.MathUtils.randFloat(-ARENA + margin, ARENA - margin),
+        0,
+        THREE.MathUtils.randFloat(-ARENA + margin, ARENA - margin)
+      );
+      scene.add(b);
+      bunnyVel.set(0, 0, 0);
+      pickNewTarget();
+      return b;
+    }
+
+    let bunny = spawnBunny();
+
+    const keys = new Set();
+    window.addEventListener("keydown", (e) => {
+      keys.add(e.code);
+      if (e.code === "Space") e.preventDefault();
+    });
+    window.addEventListener("keyup", (e) => keys.delete(e.code));
+
+    const raycaster = new THREE.Raycaster();
+    let shootTimer = 0;
+    let score = 0;
+
+    function clampToArena(v) {
+      const m = ARENA - 1.2;
+      v.x = THREE.MathUtils.clamp(v.x, -m, m);
+      v.z = THREE.MathUtils.clamp(v.z, -m, m);
+    }
+
+    function showPlusOne(worldPoint) {
+      const v = worldPoint.clone().project(camera);
+      if (v.z > 1) return;
+      const x = (v.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-v.y * 0.5 + 0.5) * window.innerHeight;
+      const el = document.createElement("div");
+      el.className = "hit-plus";
+      el.textContent = "+1";
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      document.body.appendChild(el);
+      el.addEventListener("animationend", () => el.remove());
+    }
+
+    function tryShoot(dt) {
+      shootTimer -= dt;
+      if (shootTimer > 0) return;
+      if (!keys.has("Space")) return;
+      shootTimer = SHOOT_COOLDOWN;
+
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      raycaster.set(camera.position.clone().add(dir.clone().multiplyScalar(0.15)), dir);
+      const hits = raycaster.intersectObject(bunny, true);
+      if (hits.length > 0) {
+        const p = hits[0].point.clone();
+        showPlusOne(p);
+        score += 1;
+        scoreEl.textContent = String(score);
+        destroyBunny(bunny);
+        bunny = spawnBunny();
+      }
+    }
+
+    const tmpV = new THREE.Vector3();
+    let wanderT = 0;
+
+    function updateBunny(dt) {
+      wanderT -= dt;
+      if (wanderT <= 0) {
+        wanderT = THREE.MathUtils.randFloat(1.2, 2.8);
+        if (Math.random() < 0.35) pickNewTarget();
+      }
+      tmpV.copy(target).sub(bunny.position);
+      tmpV.y = 0;
+      if (tmpV.lengthSq() < 0.8) pickNewTarget();
+      tmpV.normalize().multiplyScalar(BUNNY_SPEED);
+      bunnyVel.lerp(tmpV, 1 - Math.exp(-4 * dt));
+      bunny.position.addScaledVector(bunnyVel, dt);
+      clampToArena(bunny.position);
+      if (bunnyVel.lengthSq() > 0.01) {
+        const ang = Math.atan2(bunnyVel.x, bunnyVel.z);
+        bunny.rotation.y = ang;
+      }
+      const hop = Math.sin(performance.now() * 0.008) * 0.06;
+      bunny.position.y = Math.max(0, hop);
+    }
+
+    let yaw = 0;
+    function updatePlayer(dt) {
+      if (keys.has("ArrowLeft")) yaw += ROT_SPEED * dt;
+      if (keys.has("ArrowRight")) yaw -= ROT_SPEED * dt;
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = yaw;
+      camera.rotation.x = 0;
+
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      forward.y = 0;
+      forward.normalize();
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+      right.y = 0;
+      right.normalize();
+
+      const move = new THREE.Vector3();
+      if (keys.has("ArrowUp")) move.add(forward);
+      if (keys.has("ArrowDown")) move.sub(forward);
+      if (move.lengthSq() > 0) {
+        move.normalize().multiplyScalar(MOVE_SPEED * dt);
+        camera.position.add(move);
+      }
+      camera.position.y = PLAYER_H;
+      clampToArena(camera.position);
+    }
+
+    const clock = new THREE.Clock();
+    function tick() {
+      const dt = Math.min(clock.getDelta(), 0.05);
+      updatePlayer(dt);
+      updateBunny(dt);
+      tryShoot(dt);
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
